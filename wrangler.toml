@@ -1,0 +1,9 @@
+name = "voicy"
+main = "src/worker.js"
+compatibility_date = "2026-09-25"
+workers_dev = true
+keep_vars = true
+
+[vars]
+DISCORD_APPLICATION_ID = "1545438694725652490"
+DISCORD_PUBLIC_KEY = "66ecc96b36f7aa337ea59b569a19fbb617fd13b3b9539c56fb02229ce9b2402c"
