@@ -40,7 +40,7 @@ After the Worker is online:
 
 For the first release, Voicy accepts OGG files containing Opus audio and re-uploads them as `voice-message.ogg` with MIME type `audio/ogg; codecs=opus`.
 
-Files are limited to 8 MB so the Worker can fetch and return the audio inside Discord's strict initial-interaction response window.
+Voicy no longer imposes its own fixed 8 MB cap. It reads Discord's `attachment_size_limit` from each interaction and accepts files up to the limit Discord reports for that user/context. Large files can still be less reliable because Discord requires the initial interaction response within 3 seconds.
 
 ## Important implementation detail
 
