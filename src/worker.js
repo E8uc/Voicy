@@ -1,8 +1,8 @@
 const DISCORD_API = "https://discord.com/api/v10";
 const VOICE_MESSAGE_FLAG = 1 << 13;
 const EPHEMERAL_FLAG = 1 << 6;
-const MAX_AUDIO_BYTES = 8 * 1024 * 1024;
-const RUNTIME_VERSION = "2026-09-25-voicy-v1";
+const DEFAULT_ATTACHMENT_LIMIT = 20 * 1024 * 1024;
+const RUNTIME_VERSION = "2026-09-25-voicy-v2-dynamic-upload-limit";
 
 const VOICE_COMMAND = {
   name: "voice",
@@ -187,9 +187,13 @@ async function handleVoiceInteraction(interaction) {
   }
 
   const size = Number(attachment.size || 0);
-  if (size > MAX_AUDIO_BYTES) {
+  const interactionLimit = Number(
+    interaction.attachment_size_limit || DEFAULT_ATTACHMENT_LIMIT,
+  );
+
+  if (size > interactionLimit) {
     return interactionResponse(
-      `For reliability, Voicy currently accepts files up to ${Math.floor(MAX_AUDIO_BYTES / 1024 / 1024)} MB.`,
+      `This file is larger than Discord's current upload limit for this interaction (${formatBytes(interactionLimit)}).`,
       true,
     );
   }
@@ -409,6 +413,13 @@ function hexToBytes(hex) {
     output[i] = Number.parseInt(value.slice(i * 2, i * 2 + 2), 16);
   }
   return output;
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes || 0);
+  if (!Number.isFinite(value) || value <= 0) return "unknown";
+  const mib = value / (1024 * 1024);
+  return `${Math.round(mib * 10) / 10} MiB`;
 }
 
 function clamp(value, min, max) {
