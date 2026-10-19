@@ -2,27 +2,50 @@ const DISCORD_API = "https://discord.com/api/v10";
 const VOICE_MESSAGE_FLAG = 1 << 13;
 const EPHEMERAL_FLAG = 1 << 6;
 const DEFAULT_ATTACHMENT_LIMIT = 20 * 1024 * 1024;
-const RUNTIME_VERSION = "2026-09-25-voicy-v2-dynamic-upload-limit";
+const RUNTIME_VERSION = "2026-10-19-voicy-v3-id-storage";
+const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+const DEFAULT_TTL_HOURS = 24;
+const ID_LENGTH = 7;
+const MODAL_ID = "voicy_id_modal";
 
 const VOICE_COMMAND = {
   name: "voice",
-  description: "Send an existing OGG Opus file as a Discord voice message",
+  description: "get “Send Voice Messages” permission every where",
   type: 1,
   integration_types: [1],
   contexts: [0, 1, 2],
   options: [
     {
+      name: "id",
+      description: "Voice ID from the recorder website (leave empty to be asked)",
+      type: 3,
+      required: false,
+      max_length: 20,
+    },
+    {
       name: "file",
-      description: "Choose an OGG Opus audio file",
+      description: "Or choose an OGG Opus audio file directly",
       type: 11,
-      required: true,
+      required: false,
     },
   ],
 };
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
+
+    if (request.method === "OPTIONS" && url.pathname.startsWith("/api/")) {
+      return new Response(null, { status: 204, headers: corsHeaders(env) });
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/status") {
+      return handleStatus(request, url, env);
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/upload") {
+      return handleUpload(request, env);
+    }
 
     if (request.method === "GET" && url.pathname === "/") {
       return homePage(env);
@@ -61,13 +84,38 @@ export default {
       return Response.json({ type: 1 });
     }
 
+    try {
+      return await routeInteraction(interaction, env, ctx);
+    } catch (error) {
+      console.error("Interaction failed", error);
+      return interactionResponse("Something went wrong on our side. Please try again in a moment.", true);
+    }
+  },
+};
+
+async function routeInteraction(interaction, env, ctx) {
+  {
+
     if (interaction.type === 2 && interaction.data?.name === "voice") {
-      return handleVoiceInteraction(interaction);
+      const options = interaction.data?.options || [];
+      if (options.some((item) => item.name === "file")) {
+        return handleVoiceInteraction(interaction);
+      }
+      const idOption = options.find((item) => item.name === "id");
+      if (idOption?.value) {
+        return sendStoredVoice(interaction, idOption.value, env, ctx);
+      }
+      return idModal();
+    }
+
+    if (interaction.type === 5 && interaction.data?.custom_id === MODAL_ID) {
+      const value = findModalValue(interaction.data.components, "voice_id");
+      return sendStoredVoice(interaction, value, env, ctx);
     }
 
     return interactionResponse("Unknown command.", true);
-  },
-};
+  }
+}
 
 function homePage(env) {
   const appId = encodeURIComponent(String(env.DISCORD_APPLICATION_ID || ""));
@@ -219,7 +267,10 @@ async function handleVoiceInteraction(interaction) {
     );
   }
 
-  const waveform = makeWaveform(bytes, metadata.duration);
+  return sendVoiceMessage(interaction, bytes, metadata.duration, makeWaveform(bytes, metadata.duration));
+}
+
+async function sendVoiceMessage(interaction, bytes, duration, waveform, schedule, onSuccess, retryHint = "") {
   const callbackPayload = {
     type: 4,
     data: {
@@ -228,7 +279,7 @@ async function handleVoiceInteraction(interaction) {
         {
           id: "0",
           filename: "voice-message.ogg",
-          duration_secs: metadata.duration,
+          duration_secs: duration,
           waveform,
         },
       ],
@@ -255,9 +306,197 @@ async function handleVoiceInteraction(interaction) {
   if (!callback.ok) {
     const detail = await callback.text().catch(() => "");
     console.error("Voice callback failed", callback.status, detail.slice(0, 1000));
+    return interactionResponse(
+      `Discord didn't accept the voice message (error ${callback.status}). ${retryHint}Please try again in a moment.`,
+      true,
+    );
+  } else if (onSuccess) {
+    const work = onSuccess();
+    if (schedule) schedule(work);
+    else await work;
   }
 
   return new Response(null, { status: 202 });
+}
+
+function idModal() {
+  return Response.json({
+    type: 9,
+    data: {
+      custom_id: MODAL_ID,
+      title: "Voicy",
+      components: [
+        {
+          type: 1,
+          components: [
+            {
+              type: 4,
+              custom_id: "voice_id",
+              style: 1,
+              label: "ID",
+              placeholder: "0000001",
+              min_length: 1,
+              max_length: 20,
+              required: true,
+            },
+          ],
+        },
+      ],
+    },
+  });
+}
+
+function findModalValue(components, customId) {
+  for (const row of components || []) {
+    for (const field of row.components || [row]) {
+      if (field.custom_id === customId) return String(field.value || "");
+    }
+  }
+  return "";
+}
+
+function normalizeId(raw) {
+  const digits = String(raw || "").replace(/\D/g, "");
+  if (!digits || digits.length > ID_LENGTH) return "";
+  return digits.padStart(ID_LENGTH, "0");
+}
+
+async function sendStoredVoice(interaction, rawId, env, ctx) {
+  if (!env.VOICES) {
+    return interactionResponse("Storage isn't configured (missing KV binding VOICES).", true);
+  }
+
+  const id = normalizeId(rawId);
+  if (!id) {
+    return interactionResponse("ID غير صحيح. اكتب الرقم فقط، مثل 0000001", true);
+  }
+
+  let stored;
+  try {
+    stored = await env.VOICES.getWithMetadata(id, { type: "arrayBuffer" });
+  } catch (error) {
+    console.error("KV read failed", error);
+    return interactionResponse("We couldn't reach storage right now. Please try again in a moment.", true);
+  }
+  if (!stored.value) {
+    return interactionResponse(`ما لقيت صوت بالـ ID ${id}`, true);
+  }
+
+  const bytes = new Uint8Array(stored.value);
+  const meta = stored.metadata || {};
+  const duration = Number(meta.duration) > 0 ? Number(meta.duration) : inspectOggOpus(bytes).duration;
+  if (!duration) {
+    return interactionResponse("الملف المخزن تالف.", true);
+  }
+
+  const waveform = meta.waveform || makeWaveform(bytes, duration);
+  // Single use: once Discord accepted the message, the stored copy is deleted.
+  const cleanup = async () => {
+    try {
+      await env.VOICES.delete(id);
+    } catch (error) {
+      console.error("Delete after send failed", error);
+    }
+  };
+  return sendVoiceMessage(interaction, bytes, duration, waveform, (work) => {
+    if (ctx?.waitUntil) ctx.waitUntil(work);
+  }, cleanup, "Your ID is still valid. ");
+}
+
+function corsHeaders(env) {
+  return {
+    "access-control-allow-origin": String(env.ALLOWED_ORIGIN || "*"),
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-headers": "content-type, x-upload-key, x-waveform",
+    "access-control-max-age": "86400",
+  };
+}
+
+function jsonWithCors(env, body, status = 200) {
+  return Response.json(body, { status, headers: { ...corsHeaders(env), "cache-control": "no-store" } });
+}
+
+function safeEqual(a, b) {
+  const x = new TextEncoder().encode(String(a));
+  const y = new TextEncoder().encode(String(b));
+  let diff = x.length ^ y.length;
+  for (let i = 0; i < Math.max(x.length, y.length); i += 1) {
+    diff |= (x[i] || 0) ^ (y[i] || 0);
+  }
+  return diff === 0;
+}
+
+function validWaveform(value) {
+  if (!value || value.length > 400 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) return "";
+  try {
+    return atob(value).length >= 1 && atob(value).length <= 256 ? value : "";
+  } catch {
+    return "";
+  }
+}
+
+async function handleStatus(request, url, env) {
+  if (!env.VOICES || !env.UPLOAD_KEY) {
+    return jsonWithCors(env, { error: "Server is missing the VOICES binding or UPLOAD_KEY secret." }, 500);
+  }
+  if (!safeEqual(request.headers.get("x-upload-key") || "", env.UPLOAD_KEY)) {
+    return jsonWithCors(env, { error: "Wrong upload key." }, 403);
+  }
+
+  const ids = (url.searchParams.get("ids") || "")
+    .split(",")
+    .map(normalizeId)
+    .filter(Boolean)
+    .slice(0, 10);
+
+  const alive = [];
+  for (const id of ids) {
+    if ((await env.VOICES.get(id, "stream")) !== null) alive.push(id);
+  }
+  return jsonWithCors(env, { alive });
+}
+
+async function handleUpload(request, env) {
+  if (!env.VOICES || !env.UPLOAD_KEY) {
+    return jsonWithCors(env, { error: "Server is missing the VOICES binding or UPLOAD_KEY secret." }, 500);
+  }
+
+  if (!safeEqual(request.headers.get("x-upload-key") || "", env.UPLOAD_KEY)) {
+    return jsonWithCors(env, { error: "Wrong upload key." }, 403);
+  }
+
+  const bytes = new Uint8Array(await request.arrayBuffer());
+  if (!bytes.length || bytes.length > MAX_UPLOAD_BYTES) {
+    return jsonWithCors(env, { error: `File must be between 1 byte and ${formatBytes(MAX_UPLOAD_BYTES)}.` }, 413);
+  }
+
+  const metadata = inspectOggOpus(bytes);
+  if (!metadata.ok) {
+    return jsonWithCors(env, { error: "File is not valid OGG Opus." }, 415);
+  }
+
+  const waveform = validWaveform(request.headers.get("x-waveform") || "") || makeWaveform(bytes, metadata.duration);
+
+  let id = "";
+  for (let attempt = 0; attempt < 12 && !id; attempt += 1) {
+    const random = crypto.getRandomValues(new Uint32Array(1))[0] % 10 ** ID_LENGTH;
+    const candidate = String(random).padStart(ID_LENGTH, "0");
+    if (candidate !== "0".repeat(ID_LENGTH) && (await env.VOICES.get(candidate, "stream")) === null) {
+      id = candidate;
+    }
+  }
+  if (!id) {
+    return jsonWithCors(env, { error: "Couldn't allocate an ID, try again." }, 503);
+  }
+
+  const ttlHours = Number(env.VOICE_TTL_HOURS) > 0 ? Number(env.VOICE_TTL_HOURS) : DEFAULT_TTL_HOURS;
+  const ttlSeconds = Math.max(60, Math.round(ttlHours * 3600));
+  await env.VOICES.put(id, bytes, {
+    metadata: { duration: metadata.duration, waveform },
+    expirationTtl: ttlSeconds,
+  });
+
+  return jsonWithCors(env, { id, duration: metadata.duration, expiresAt: Date.now() + ttlSeconds * 1000 });
 }
 
 function interactionResponse(content, ephemeral = false) {
