@@ -1,0 +1,578 @@
+<!doctype html>
+<html lang="en" data-theme="braille">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#303030">
+<title>Voicy</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app" class="app-shell">
+  <header class="topbar">
+    <div class="brand"><span>Voicy</span></div>
+  </header>
+
+  <main class="main">
+    <section class="welcome">
+      <h1>Welcome to Voicy!</h1>
+      <h3>Turn any audio or video into a Discord voice message</h3>
+      <div class="bs-callout">
+        <p>Drop a file or record your voice, trim it, and we'll hand you an ID. Then type <code>/voice</code> in Discord.</p>
+      </div>
+    </section>
+
+    <hr>
+
+    <section class="tools-shell">
+      <header class="tools-header">
+        <div></div>
+        <div class="tools-title">Voice Tools</div>
+        <div></div>
+      </header>
+
+      <nav class="tools-tabs" id="tabs" aria-label="Voice tools">
+        <button class="tools-tab active" data-tab="add">Add</button>
+        <button class="tools-tab" data-tab="trim">Trim</button>
+        <button class="tools-tab" data-tab="id">Your ID</button>
+      </nav>
+
+      <div class="tools-content">
+        <p id="msg" role="status"></p>
+
+        <section class="panel active" data-panel="add">
+          <label class="dropzone" id="dropZone" for="fileInput">
+            <div class="drop-icon">♪</div>
+            <h2>Drop a video or audio file here</h2>
+            <p>MP4, WEBM, MP3, WAV, M4A, OGG… or paste with Ctrl+V</p>
+            <span class="main-btn">Choose file</span>
+            <input id="fileInput" type="file" accept="audio/*,video/*" hidden>
+            <small>Processed on your device. Max 5 minutes.</small>
+          </label>
+
+          <div class="or">or</div>
+
+          <div class="settings-card rec-card">
+            <div class="setting-row"><div><b>Record a voice message</b><span>Pause and resume whenever you like</span></div></div>
+            <canvas id="live" width="800" height="112"></canvas>
+            <div id="timer">0:00</div>
+            <div class="row">
+              <button id="recBtn" class="main-btn">● Record</button>
+              <button id="pauseBtn" class="outline-btn" disabled>Pause</button>
+            </div>
+            <div id="micWrap" hidden><select id="mic" aria-label="Microphone"></select></div>
+          </div>
+
+          <div class="settings-card">
+            <details id="settings">
+              <summary>Connection</summary>
+              <div class="stack">
+                <div><label class="l" for="api">Worker URL</label><input type="text" id="api" placeholder="https://voicy.YOUR-NAME.workers.dev" autocomplete="off"></div>
+                <div><label class="l" for="key">Upload key</label><input type="password" id="key" autocomplete="off"></div>
+              </div>
+            </details>
+          </div>
+        </section>
+
+        <section class="panel" data-panel="trim">
+          <div class="settings-card" id="editHint"><p class="hint">Add a file or record something first.</p></div>
+          <div id="editor" class="hidden">
+            <div class="settings-card">
+              <div class="setting-row"><div><b>Trim</b><span>Drag the handles to choose what to send</span></div><button class="outline-btn" id="playBtn">▶ Play</button></div>
+              <canvas id="wave" width="1200" height="220"></canvas>
+              <div class="times"><span id="tStart">0:00.0</span><span id="tSel"></span><span id="tEnd">0:00.0</span></div>
+            </div>
+            <div class="settings-card">
+              <label class="switch-row"><span><b>Boost quiet audio</b><small>Brings soft voices up to a clear level</small></span><input id="norm" type="checkbox" checked><i></i></label>
+            </div>
+            <button class="main-btn btn-wide" id="sendBtn">Get my ID</button>
+          </div>
+        </section>
+
+        <section class="panel" data-panel="id">
+          <div class="settings-card" id="idHint"><p class="hint">Your ID will show up here once it's ready.</p></div>
+          <div class="settings-card hidden" id="result">
+            <p class="hello">gotchu. Your ID is</p>
+            <div class="id" id="resultId">0000000</div>
+            <div class="row">
+              <button class="outline-btn" id="copyId">Copy ID</button>
+              <button class="outline-btn" id="copyCmd">Copy command</button>
+            </div>
+            <p class="note">In Discord, type <code>/voice</code> and enter this ID. It works once, then it's gone.</p>
+          </div>
+          <div class="settings-card" id="recentCard" hidden>
+            <div class="setting-row"><div><b>Waiting to be sent</b><span>IDs that haven't been used yet</span></div></div>
+            <div id="recent"></div>
+          </div>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <span>an open source project that turns audio into Discord voice messages</span>
+  </footer>
+</div>
+<div id="toast" class="toast"></div>
+<div id="errors" class="errors" aria-live="assertive"></div>
+
+<script>
+// ===== Set your Worker URL once here (or in the Connection box) =====
+const DEFAULT_API = "";
+// ====================================================================
+
+const SR = 48000, MAX_SECS = 300, MIN_SECS = 0.3, MAX_INPUT = 200 * 1024 * 1024;
+const $ = (id) => document.getElementById(id);
+const store = {
+  get(k){ try{ return localStorage.getItem(k) || ""; }catch{ return ""; } },
+  set(k,v){ try{ localStorage.setItem(k,v); }catch{} },
+};
+const fmt = (s) => `${Math.floor(s/60)}:${(s%60).toFixed(1).padStart(4,"0")}`;
+const fmtInt = (s) => `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,"0")}`;
+
+function showError(text){
+  const box = document.createElement("div");
+  box.className = "err-toast"; box.setAttribute("role", "alert");
+  const span = document.createElement("span"); span.textContent = text;
+  const x = document.createElement("button"); x.textContent = "×"; x.setAttribute("aria-label", "Dismiss");
+  const close = () => box.remove();
+  x.onclick = close; box.append(span, x);
+  $("errors").append(box);
+  while ($("errors").children.length > 3) $("errors").firstChild.remove();
+  setTimeout(close, 12000);
+}
+window.addEventListener("error", () => showError("Something unexpected happened. Please refresh and try again."));
+window.addEventListener("unhandledrejection", () => showError("Something unexpected happened. Please try again."));
+
+let toastTimer;
+function toast(text){ const t = $("toast"); t.textContent = text; t.classList.add("show"); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("show"), 1500); }
+function setTab(name){
+  document.querySelectorAll(".tools-tab").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
+  document.querySelectorAll(".panel").forEach((p) => p.classList.toggle("active", p.dataset.panel === name));
+}
+$("tabs").addEventListener("click", (e) => { const b = e.target.closest(".tools-tab"); if (b) setTab(b.dataset.tab); });
+
+function say(text, err = false){
+  if (err){ $("msg").textContent = ""; $("msg").className = ""; return showError(text); } $("msg").textContent = text; $("msg").className = err ? "err" : ""; }
+
+// ---------- settings ----------
+$("api").value = store.get("voicy_api") || DEFAULT_API;
+$("key").value = store.get("voicy_key");
+$("api").addEventListener("change", () => { store.set("voicy_api", $("api").value.trim()); checkRecent(); });
+$("key").addEventListener("change", () => { store.set("voicy_key", $("key").value); checkRecent(); });
+if (!$("api").value || !$("key").value) $("settings").open = true;
+const apiBase = () => $("api").value.trim().replace(/\/+$/, "");
+
+// ---------- audio state ----------
+let pcm = null;                 // mono Float32 @48k
+let sel = { start: 0, end: 0 }; // seconds
+let peaks = null;               // for drawing
+let player = null;              // {ctx, src, t0, offset}
+
+async function loadBlob(blob){
+  stopPlayback();
+  if (blob.size > MAX_INPUT) return say("That file is a bit too big (200 MB max). Try a shorter one.", true);
+  say("Reading your audio…");
+  try{
+    const ctx = new AudioContext({ sampleRate: SR });
+    const decoded = await ctx.decodeAudioData(await blob.arrayBuffer());
+    await ctx.close();
+    const mono = new Float32Array(decoded.length);
+    for (let c = 0; c < decoded.numberOfChannels; c++){
+      const d = decoded.getChannelData(c);
+      for (let i = 0; i < mono.length; i++) mono[i] += d[i] / decoded.numberOfChannels;
+    }
+    if (mono.length / SR < MIN_SECS) return say("That's too short to send. Try something a bit longer.", true);
+    pcm = mono;
+    sel = { start: 0, end: Math.min(pcm.length / SR, MAX_SECS) };
+    buildPeaks();
+    $("editor").classList.remove("hidden");
+    $("editHint").classList.add("hidden");
+    $("result").classList.add("hidden");
+    setTab("trim");
+    drawWave();
+    updateTimes();
+    const long = pcm.length / SR > MAX_SECS;
+    say(long ? "That's longer than 5 minutes, so we picked the first 5. Drag the handles to choose another part." : "Looks good. Trim it if you like, then grab your ID.");
+  }catch(err){
+    console.error(err);
+    say("We couldn't read audio from that file. Try mp4, webm, mp3, wav, m4a or ogg.", true);
+  }
+}
+
+// ---------- drop / browse / paste ----------
+const drop = $("dropZone");
+["dragenter","dragover"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+["dragleave","drop"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+drop.addEventListener("drop", (e) => { const f = e.dataTransfer.files[0]; if (f) loadBlob(f); });
+$("fileInput").addEventListener("change", (e) => { const f = e.target.files[0]; e.target.value = ""; if (f) loadBlob(f); });
+document.addEventListener("paste", (e) => {
+  const f = [...(e.clipboardData?.files || [])].find((x) => /^(audio|video)\//.test(x.type));
+  if (f){ e.preventDefault(); loadBlob(f); }
+});
+// dropping anywhere else on the page shouldn't navigate away
+["dragover","drop"].forEach((t) => window.addEventListener(t, (e) => { if (e.target !== drop && !drop.contains(e.target)) e.preventDefault(); }));
+
+// ---------- recording ----------
+let rec = null, stream = null, chunks = [], recCtx = null, analyser = null, raf = 0, bars = [];
+let recElapsed = 0, recSince = 0, tick = 0;
+
+async function listMics(){
+  try{
+    const devs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "audioinput");
+    if (devs.length < 2 || !devs[0].label) return;
+    const cur = $("mic").value;
+    $("mic").innerHTML = devs.map((d, i) => `<option value="${d.deviceId}">${(d.label || "Microphone " + (i+1)).replace(/</g,"&lt;")}</option>`).join("");
+    if (cur) $("mic").value = cur;
+    $("micWrap").hidden = false;
+  }catch{}
+}
+listMics();
+
+const elapsed = () => recElapsed + (rec?.state === "recording" ? (Date.now() - recSince) / 1000 : 0);
+
+$("recBtn").addEventListener("click", () => (rec && rec.state !== "inactive") ? stopRec() : startRec());
+$("pauseBtn").addEventListener("click", () => {
+  if (!rec) return;
+  if (rec.state === "recording"){ recElapsed = elapsed(); rec.pause(); $("pauseBtn").textContent = "Resume"; say("Paused. Take your time."); }
+  else if (rec.state === "paused"){ recSince = Date.now(); rec.resume(); $("pauseBtn").textContent = "Pause"; say("Recording…"); }
+});
+
+async function startRec(){
+  stopPlayback();
+  try{
+    const deviceId = $("mic").value;
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, ...(deviceId ? { deviceId: { exact: deviceId } } : {}) } });
+  }catch{
+    return say("We couldn't reach your microphone. Allow access in your browser and try again.", true);
+  }
+  listMics();
+  chunks = []; bars = []; recElapsed = 0; recSince = Date.now();
+  rec = new MediaRecorder(stream);
+  rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+  rec.onstop = () => loadBlob(new Blob(chunks, { type: rec.mimeType }));
+  rec.start(1000);
+
+  recCtx = new AudioContext();
+  analyser = recCtx.createAnalyser(); analyser.fftSize = 1024;
+  recCtx.createMediaStreamSource(stream).connect(analyser);
+  const buf = new Uint8Array(analyser.fftSize);
+  let frame = 0;
+  const loop = () => {
+    analyser.getByteTimeDomainData(buf);
+    if (rec?.state === "recording" && ++frame % 3 === 0){
+      let p = 0; for (const v of buf) p = Math.max(p, Math.abs(v - 128));
+      bars.push(p / 128);
+      if (bars.length > 100) bars.shift();
+    }
+    drawLive();
+    raf = requestAnimationFrame(loop);
+  };
+  loop();
+  tick = setInterval(() => {
+    const s = elapsed();
+    $("timer").textContent = fmtInt(s);
+    if (s >= MAX_SECS) stopRec();
+  }, 200);
+
+  $("recBtn").classList.add("on"); $("recBtn").textContent = "■ Stop";
+  $("pauseBtn").disabled = false; $("pauseBtn").textContent = "Pause";
+  say("Recording…");
+}
+
+function stopRec(){
+  clearInterval(tick); cancelAnimationFrame(raf);
+  if (rec && rec.state !== "inactive") rec.stop();
+  stream?.getTracks().forEach((t) => t.stop());
+  recCtx?.close();
+  $("recBtn").classList.remove("on"); $("recBtn").textContent = "● Record";
+  $("pauseBtn").disabled = true; $("pauseBtn").textContent = "Pause";
+  bars = []; drawLive();
+}
+
+function css(name){ return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+
+function drawLive(){
+  const c = $("live"), g = c.getContext("2d"), w = c.width, h = c.height;
+  g.clearRect(0, 0, w, h);
+  g.fillStyle = css("--primary");
+  const bw = w / 100;
+  bars.forEach((v, i) => {
+    const bh = Math.max(3, v * h * 0.95);
+    g.fillRect(i * bw + 1, (h - bh) / 2, bw - 2, bh);
+  });
+  if (!bars.length){ g.globalAlpha = .35; for (let i = 0; i < 100; i++) g.fillRect(i * bw + 1, h / 2 - 1.5, bw - 2, 3); g.globalAlpha = 1; }
+}
+drawLive();
+
+// ---------- waveform editor ----------
+function buildPeaks(){
+  const n = 600;
+  peaks = new Float32Array(n);
+  for (let i = 0; i < n; i++){
+    const a = Math.floor(i * pcm.length / n), b = Math.floor((i + 1) * pcm.length / n);
+    let m = 0; for (let j = a; j < b; j += 8) m = Math.max(m, Math.abs(pcm[j]));
+    peaks[i] = m;
+  }
+  let top = 0; for (const v of peaks) top = Math.max(top, v);
+  if (top > 0) for (let i = 0; i < n; i++) peaks[i] = Math.pow(peaks[i] / top, 0.7);
+}
+
+let playPos = null;
+function drawWave(){
+  if (!pcm) return;
+  const c = $("wave"), g = c.getContext("2d"), w = c.width, h = c.height, dur = pcm.length / SR;
+  g.clearRect(0, 0, w, h);
+  const brand = css("--primary"), muted = css("--muted");
+  const x0 = sel.start / dur * w, x1 = sel.end / dur * w;
+  for (let i = 0; i < peaks.length; i++){
+    const x = i / peaks.length * w, bh = Math.max(2, peaks[i] * h * 0.85);
+    g.fillStyle = (x >= x0 && x <= x1) ? brand : muted;
+    g.globalAlpha = (x >= x0 && x <= x1) ? 1 : .35;
+    g.fillRect(x, (h - bh) / 2, Math.max(1, w / peaks.length - 1), bh);
+  }
+  g.globalAlpha = 1;
+  g.fillStyle = brand;
+  for (const x of [x0, x1]){ g.fillRect(x - 2, 0, 4, h); g.beginPath(); g.arc(x, h / 2, 9, 0, 7); g.fill(); }
+  if (playPos !== null){ g.fillStyle = "#fff"; g.fillRect(playPos / dur * w - 1, 0, 2, h); }
+}
+
+function updateTimes(){
+  $("tStart").textContent = fmt(sel.start);
+  $("tEnd").textContent = fmt(sel.end);
+  $("tSel").textContent = `${(sel.end - sel.start).toFixed(1)}s selected`;
+}
+
+let drag = null;
+$("wave").addEventListener("pointerdown", (e) => {
+  if (!pcm) return;
+  const r = e.currentTarget.getBoundingClientRect(), dur = pcm.length / SR;
+  const t = (e.clientX - r.left) / r.width * dur;
+  drag = Math.abs(t - sel.start) <= Math.abs(t - sel.end) ? "start" : "end";
+  e.currentTarget.setPointerCapture(e.pointerId);
+  moveHandle(t);
+});
+$("wave").addEventListener("pointermove", (e) => {
+  if (!drag) return;
+  const r = e.currentTarget.getBoundingClientRect();
+  moveHandle((e.clientX - r.left) / r.width * (pcm.length / SR));
+});
+["pointerup","pointercancel"].forEach((t) => $("wave").addEventListener(t, () => { drag = null; }));
+
+function moveHandle(t){
+  const dur = pcm.length / SR;
+  t = Math.max(0, Math.min(dur, t));
+  if (drag === "start") sel.start = Math.max(0, Math.min(t, sel.end - MIN_SECS));
+  else sel.end = Math.min(dur, Math.max(t, sel.start + MIN_SECS));
+  if (sel.end - sel.start > MAX_SECS){ if (drag === "start") sel.end = sel.start + MAX_SECS; else sel.start = sel.end - MAX_SECS; }
+  stopPlayback(); drawWave(); updateTimes();
+}
+
+// ---------- selection → samples (+ optional gain) ----------
+function selectedPcm(){
+  const a = Math.floor(sel.start * SR), b = Math.min(pcm.length, Math.floor(sel.end * SR));
+  const out = pcm.slice(a, b);
+  if ($("norm").checked){
+    let p = 0; for (let i = 0; i < out.length; i += 4) p = Math.max(p, Math.abs(out[i]));
+    for (let i = 0; i < out.length; i++) p = Math.max(p, Math.abs(out[i]));
+    if (p > 0.001){
+      const gain = Math.min(8, 0.89 / p);
+      if (gain > 1.05) for (let i = 0; i < out.length; i++) out[i] = Math.max(-1, Math.min(1, out[i] * gain));
+    }
+  }
+  return out;
+}
+
+// ---------- preview ----------
+$("playBtn").addEventListener("click", () => player ? stopPlayback() : startPlayback());
+function startPlayback(){
+  const data = selectedPcm();
+  const ctx = new AudioContext({ sampleRate: SR });
+  const buf = ctx.createBuffer(1, data.length, SR);
+  buf.copyToChannel(data, 0);
+  const src = ctx.createBufferSource();
+  src.buffer = buf; src.connect(ctx.destination);
+  src.onended = () => stopPlayback();
+  src.start();
+  player = { ctx, src, t0: ctx.currentTime, offset: sel.start };
+  $("playBtn").textContent = "■ Stop";
+  const loop = () => {
+    if (!player) return;
+    playPos = player.offset + (player.ctx.currentTime - player.t0);
+    drawWave(); requestAnimationFrame(loop);
+  };
+  loop();
+}
+function stopPlayback(){
+  if (!player) return;
+  const p = player; player = null; playPos = null;
+  try{ p.src.onended = null; p.src.stop(); }catch{}
+  p.ctx.close();
+  $("playBtn").textContent = "▶ Play";
+  drawWave();
+}
+
+// ---------- OGG Opus encoding ----------
+async function encodeOggOpus(samples){
+  if (typeof AudioEncoder === "undefined") throw new Error("This browser can't encode Opus audio. Please use a recent Chrome, Edge, Safari or Firefox.");
+  const packets = [];
+  let preSkip = 312, error = null;
+  const encoder = new AudioEncoder({
+    output: (chunk, meta) => {
+      const d = new Uint8Array(chunk.byteLength); chunk.copyTo(d); packets.push(d);
+      const desc = meta?.decoderConfig?.description;
+      if (desc && packets.length === 1){
+        const h = new Uint8Array(desc instanceof ArrayBuffer ? desc : desc.buffer);
+        if (h.length >= 12 && String.fromCharCode(...h.slice(0, 8)) === "OpusHead") preSkip = h[10] | (h[11] << 8);
+      }
+    },
+    error: (e) => { error = e; },
+  });
+  encoder.configure({ codec: "opus", sampleRate: SR, numberOfChannels: 1, bitrate: 32000 });
+  const STEP = 4800;
+  for (let off = 0; off < samples.length; off += STEP){
+    const part = samples.subarray(off, Math.min(samples.length, off + STEP));
+    encoder.encode(new AudioData({ format: "f32-planar", sampleRate: SR, numberOfFrames: part.length, numberOfChannels: 1, timestamp: Math.round(off / SR * 1e6), data: part }));
+    if (encoder.encodeQueueSize > 50) await new Promise((r) => setTimeout(r, 0));
+  }
+  await encoder.flush(); encoder.close();
+  if (error) throw error;
+  if (!packets.length) throw new Error("That recording is empty.");
+  return new Blob(muxOgg(packets, preSkip, samples.length), { type: "audio/ogg; codecs=opus" });
+}
+
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let i = 0; i < 256; i++){ let r = i << 24; for (let k = 0; k < 8; k++) r = (r & 0x80000000) ? ((r << 1) ^ 0x04c11db7) : (r << 1); t[i] = r >>> 0; }
+  return t;
+})();
+
+function oggPage(packets, { granule, seq, serial, bos = false, eos = false }){
+  const lacing = [];
+  for (const p of packets){ let n = p.length; while (n >= 255){ lacing.push(255); n -= 255; } lacing.push(n); }
+  const bodyLen = packets.reduce((a, p) => a + p.length, 0);
+  const page = new Uint8Array(27 + lacing.length + bodyLen);
+  const dv = new DataView(page.buffer);
+  page.set([0x4f, 0x67, 0x67, 0x53, 0, (bos ? 2 : 0) | (eos ? 4 : 0)]);
+  dv.setUint32(6, granule % 4294967296, true); dv.setUint32(10, Math.floor(granule / 4294967296), true);
+  dv.setUint32(14, serial, true); dv.setUint32(18, seq, true);
+  page[26] = lacing.length; page.set(lacing, 27);
+  let pos = 27 + lacing.length;
+  for (const p of packets){ page.set(p, pos); pos += p.length; }
+  let crc = 0; for (const b of page) crc = ((crc << 8) ^ CRC_TABLE[((crc >>> 24) & 255) ^ b]) >>> 0;
+  dv.setUint32(22, crc, true);
+  return page;
+}
+
+function muxOgg(packets, preSkip, inputSamples){
+  const serial = (Math.random() * 0xffffffff) >>> 0;
+  const head = new Uint8Array(19);
+  head.set(new TextEncoder().encode("OpusHead")); head[8] = 1; head[9] = 1;
+  new DataView(head.buffer).setUint16(10, preSkip, true); new DataView(head.buffer).setUint32(12, SR, true);
+  const vendor = new TextEncoder().encode("voicy");
+  const tags = new Uint8Array(8 + 4 + vendor.length + 4);
+  tags.set(new TextEncoder().encode("OpusTags")); new DataView(tags.buffer).setUint32(8, vendor.length, true); tags.set(vendor, 12);
+  const pages = [oggPage([head], { granule: 0, seq: 0, serial, bos: true }), oggPage([tags], { granule: 0, seq: 1, serial })];
+  const PER_PAGE = 25, total = packets.length * 960;
+  let seq = 2;
+  for (let i = 0; i < packets.length; i += PER_PAGE){
+    const group = packets.slice(i, i + PER_PAGE), last = i + PER_PAGE >= packets.length;
+    const granule = preSkip + (last ? Math.min(inputSamples, total) : Math.min(total, (i + group.length) * 960));
+    pages.push(oggPage(group, { granule, seq: seq++, serial, eos: last }));
+  }
+  return pages;
+}
+
+function makeWaveform(samples){
+  const n = Math.max(32, Math.min(256, Math.round(samples.length / SR * 10)));
+  const bins = new Float32Array(n); let max = 1e-6;
+  for (let i = 0; i < n; i++){
+    const a = Math.floor(i * samples.length / n), b = Math.floor((i + 1) * samples.length / n);
+    let sum = 0; for (let j = a; j < b; j++) sum += samples[j] * samples[j];
+    bins[i] = Math.sqrt(sum / Math.max(1, b - a)); max = Math.max(max, bins[i]);
+  }
+  let s = ""; for (const v of bins) s += String.fromCharCode(Math.round(Math.pow(v / max, 0.6) * 255));
+  return btoa(s);
+}
+
+// ---------- send ----------
+$("sendBtn").addEventListener("click", async () => {
+  const api = apiBase(), key = $("key").value;
+  if (!api || !key){ $("settings").open = true; return say("Add your Worker URL and upload key in Connection first.", true); }
+  store.set("voicy_api", api); store.set("voicy_key", key);
+  stopPlayback();
+  $("sendBtn").disabled = true; $("result").classList.add("hidden");
+  try{
+    say("Getting your voice ready…");
+    const samples = selectedPcm();
+    const blob = await encodeOggOpus(samples);
+    say("We're taking care of it. Generating an ID for you…");
+    const res = await fetch(api + "/api/upload", {
+      method: "POST",
+      headers: { "x-upload-key": key, "x-waveform": makeWaveform(samples), "content-type": "audio/ogg" },
+      body: blob,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || ("Server said " + res.status));
+    showResult(data.id, data.expiresAt);
+    say("");
+  }catch(err){
+    console.error(err);
+    say("Something went wrong: " + (err.message || err), true);
+  }finally{
+    $("sendBtn").disabled = false;
+  }
+});
+
+function showResult(id, expiresAt){
+  $("resultId").textContent = id;
+  $("result").classList.remove("hidden");
+  $("idHint").classList.add("hidden");
+  setTab("id");
+  const list = loadRecent().filter((r) => r.id !== id);
+  list.unshift({ id, exp: expiresAt });
+  saveRecent(list); renderRecent();
+}
+
+async function copy(text, btn, label){
+  try{ await navigator.clipboard.writeText(text); toast("Copied"); }catch{ toast("Couldn't copy, select it manually"); }
+}
+$("copyId").addEventListener("click", (e) => copy($("resultId").textContent, e.currentTarget, "Copy ID"));
+$("copyCmd").addEventListener("click", (e) => copy("/voice id:" + $("resultId").textContent, e.currentTarget, "Copy command"));
+
+// ---------- unsent IDs ----------
+function loadRecent(){ try{ return JSON.parse(store.get("voicy_recent") || "[]").filter((r) => r.exp > Date.now()); }catch{ return []; } }
+function saveRecent(list){ store.set("voicy_recent", JSON.stringify(list.slice(0, 10))); }
+
+function renderRecent(){
+  const list = loadRecent();
+  $("recentCard").hidden = !list.length;
+  $("recent").innerHTML = "";
+  for (const r of list){
+    const row = document.createElement("div"); row.className = "item";
+    const mins = Math.max(1, Math.round((r.exp - Date.now()) / 60000));
+    const left = mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m left` : `${mins}m left`;
+    row.innerHTML = `<div><b>${r.id}</b> <span class="left">· ${left}</span></div>`;
+    const btn = document.createElement("button"); btn.className = "outline-btn"; btn.textContent = "Copy";
+    btn.onclick = () => copy(r.id, btn, "Copy");
+    row.append(btn); $("recent").append(row);
+  }
+}
+
+async function checkRecent(){
+  const list = loadRecent(), api = apiBase(), key = $("key").value;
+  if (!list.length || !api || !key) return renderRecent();
+  try{
+    const res = await fetch(`${api}/api/status?ids=${list.map((r) => r.id).join(",")}`, { headers: { "x-upload-key": key } });
+    if (!res.ok) return renderRecent();
+    const { alive } = await res.json();
+    saveRecent(list.filter((r) => alive.includes(r.id)));
+  }catch{}
+  renderRecent();
+}
+renderRecent(); checkRecent();
+setInterval(() => { if (!document.hidden) checkRecent(); }, 30000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) checkRecent(); });
+</script>
+</body>
+</html>
