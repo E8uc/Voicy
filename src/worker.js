@@ -3,8 +3,8 @@ const VOICE_MESSAGE_FLAG = 1 << 13;
 const EPHEMERAL_FLAG = 1 << 6;
 const DEFAULT_ATTACHMENT_LIMIT = 20 * 1024 * 1024;
 const RUNTIME_VERSION = "2026-10-19-voicy-v3-id-storage";
-const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
-const DEFAULT_TTL_HOURS = 24;
+const MAX_UPLOAD_BYTES = 2 * 1024 * 1024;
+const DEFAULT_TTL_HOURS = 6;
 const ID_LENGTH = 7;
 const MODAL_ID = "voicy_id_modal";
 
@@ -407,23 +407,13 @@ function corsHeaders(env) {
   return {
     "access-control-allow-origin": String(env.ALLOWED_ORIGIN || "*"),
     "access-control-allow-methods": "GET, POST, OPTIONS",
-    "access-control-allow-headers": "content-type, x-upload-key, x-waveform",
+    "access-control-allow-headers": "content-type, x-waveform",
     "access-control-max-age": "86400",
   };
 }
 
 function jsonWithCors(env, body, status = 200) {
   return Response.json(body, { status, headers: { ...corsHeaders(env), "cache-control": "no-store" } });
-}
-
-function safeEqual(a, b) {
-  const x = new TextEncoder().encode(String(a));
-  const y = new TextEncoder().encode(String(b));
-  let diff = x.length ^ y.length;
-  for (let i = 0; i < Math.max(x.length, y.length); i += 1) {
-    diff |= (x[i] || 0) ^ (y[i] || 0);
-  }
-  return diff === 0;
 }
 
 function validWaveform(value) {
@@ -435,12 +425,24 @@ function validWaveform(value) {
   }
 }
 
-async function handleStatus(request, url, env) {
-  if (!env.VOICES || !env.UPLOAD_KEY) {
-    return jsonWithCors(env, { error: "Server is missing the VOICES binding or UPLOAD_KEY secret." }, 500);
+async function tooManyRequests(request, env, limiter) {
+  if (!limiter) return false; // binding not configured: skip
+  const ip = request.headers.get("cf-connecting-ip") || "unknown";
+  try {
+    const { success } = await limiter.limit({ key: ip });
+    return !success;
+  } catch (error) {
+    console.error("Rate limiter error", error);
+    return false;
   }
-  if (!safeEqual(request.headers.get("x-upload-key") || "", env.UPLOAD_KEY)) {
-    return jsonWithCors(env, { error: "Wrong upload key." }, 403);
+}
+
+async function handleStatus(request, url, env) {
+  if (!env.VOICES) {
+    return jsonWithCors(env, { error: "Server is missing the VOICES binding." }, 500);
+  }
+  if (await tooManyRequests(request, env, env.STATUS_LIMITER)) {
+    return jsonWithCors(env, { error: "Too many requests." }, 429);
   }
 
   const ids = (url.searchParams.get("ids") || "")
@@ -457,12 +459,17 @@ async function handleStatus(request, url, env) {
 }
 
 async function handleUpload(request, env) {
-  if (!env.VOICES || !env.UPLOAD_KEY) {
-    return jsonWithCors(env, { error: "Server is missing the VOICES binding or UPLOAD_KEY secret." }, 500);
+  if (!env.VOICES) {
+    return jsonWithCors(env, { error: "Server is missing the VOICES binding." }, 500);
   }
 
-  if (!safeEqual(request.headers.get("x-upload-key") || "", env.UPLOAD_KEY)) {
-    return jsonWithCors(env, { error: "Wrong upload key." }, 403);
+  if (await tooManyRequests(request, env, env.UPLOAD_LIMITER)) {
+    return jsonWithCors(env, { error: "Too many uploads. Please wait a minute." }, 429);
+  }
+
+  const declared = Number(request.headers.get("content-length") || 0);
+  if (declared > MAX_UPLOAD_BYTES) {
+    return jsonWithCors(env, { error: `File must be under ${formatBytes(MAX_UPLOAD_BYTES)}.` }, 413);
   }
 
   const bytes = new Uint8Array(await request.arrayBuffer());
