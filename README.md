@@ -4,10 +4,11 @@ A small Cloudflare Worker Discord app that turns an existing **OGG Opus** file i
 
 ## What it does
 
-- Global `/voice file:<attachment>` command.
+- Global `/voice` command: `/voice` opens a box asking for the **ID**, or `/voice id:0000001`, or `/voice file:<attachment>`.
+- `docs/index.html`: a recorder website (GitHub Pages) that converts your recording to OGG Opus in the browser, uploads it, and gives you an ID.
 - Designed for **User Install**, so the command can be used from supported server, DM, and group-DM contexts after a user installs the app.
 - Returns a real Discord voice message using the `IS_VOICE_MESSAGE` flag with `duration_secs` and `waveform` attachment metadata.
-- No database, Durable Object, Gateway connection, or user token.
+- Voices are stored in a Cloudflare **KV** namespace (`VOICES`). No Gateway connection or user token.
 
 ## Cloudflare secrets
 
@@ -47,3 +48,18 @@ Voicy no longer imposes its own fixed 8 MB cap. It reads Discord's `attachment_s
 Discord permits `IS_VOICE_MESSAGE` on the **initial interaction response**, but does not permit that flag on normal webhook followups or webhook edits. For that reason Voicy uploads the voice message through Discord's interaction callback endpoint immediately instead of deferring the command.
 
 The waveform is generated locally from the compressed file bytes for display. It is a visual preview, not a decoded PCM amplitude analysis.
+
+## Recorder website (GitHub Pages)
+
+1. Push this repo to GitHub, then **Settings → Pages → Deploy from a branch → `main` / `/docs`**.
+2. Set your Worker URL in `DEFAULT_API` at the top of the script in `docs/index.html`. The page is public: visitors need no key.
+3. Record → **Upload** → you get an ID like `4821907`.
+4. In Discord: `/voice`, type the ID, done. IDs are 7 random digits; leading zeros are optional.
+
+Voices are **single use**: the stored file is deleted as soon as Discord accepts the message. Unused voices expire after 6 hours (`VOICE_TTL_HOURS` in `wrangler.toml` to change it). Uploads are limited per IP (6/min) and to 2 MB. `ALLOWED_ORIGIN` locks CORS to your Pages origin.
+
+The page also trims (drag the handles), boosts quiet audio, pauses/resumes recording, takes pasted files, lets you pick a microphone, and lists IDs that haven't been sent yet. Max 5 minutes per voice.
+
+After redeploying, open `/setup` again once to re-register `/voice` with the new `id` option.
+
+Browser note: conversion uses WebCodecs `AudioEncoder` (Chrome, Edge, recent Firefox/Safari). Firefox that records OGG natively skips conversion.
