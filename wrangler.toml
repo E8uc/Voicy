@@ -4,6 +4,10 @@ compatibility_date = "2026-09-25"
 workers_dev = true
 keep_vars = true
 
+# Keep logs so you can see errors in the Cloudflare dashboard (Logs tab).
+[observability]
+enabled = true
+
 # Serve the recorder page (docs/) from the Worker URL itself.
 [assets]
 directory = "./docs"
