@@ -63,15 +63,6 @@
             <div id="micWrap" hidden><select id="mic" aria-label="Microphone"></select></div>
           </div>
 
-          <div class="settings-card">
-            <details id="settings">
-              <summary>Connection</summary>
-              <div class="stack">
-                <div><label class="l" for="api">Worker URL</label><input type="text" id="api" placeholder="https://voicy.YOUR-NAME.workers.dev" autocomplete="off"></div>
-                <div><label class="l" for="key">Upload key</label><input type="password" id="key" autocomplete="off"></div>
-              </div>
-            </details>
-          </div>
         </section>
 
         <section class="panel" data-panel="trim">
@@ -156,12 +147,7 @@ function say(text, err = false){
   if (err){ $("msg").textContent = ""; $("msg").className = ""; return showError(text); } $("msg").textContent = text; $("msg").className = err ? "err" : ""; }
 
 // ---------- settings ----------
-$("api").value = store.get("voicy_api") || DEFAULT_API;
-$("key").value = store.get("voicy_key");
-$("api").addEventListener("change", () => { store.set("voicy_api", $("api").value.trim()); checkRecent(); });
-$("key").addEventListener("change", () => { store.set("voicy_key", $("key").value); checkRecent(); });
-if (!$("api").value || !$("key").value) $("settings").open = true;
-const apiBase = () => $("api").value.trim().replace(/\/+$/, "");
+const apiBase = () => DEFAULT_API.trim().replace(/\/+$/, "");
 
 // ---------- audio state ----------
 let pcm = null;                 // mono Float32 @48k
@@ -497,9 +483,8 @@ function makeWaveform(samples){
 
 // ---------- send ----------
 $("sendBtn").addEventListener("click", async () => {
-  const api = apiBase(), key = $("key").value;
-  if (!api || !key){ $("settings").open = true; return say("Add your Worker URL and upload key in Connection first.", true); }
-  store.set("voicy_api", api); store.set("voicy_key", key);
+  const api = apiBase();
+  if (!api) return say("This page isn't connected to a Worker yet (DEFAULT_API is empty).", true);
   stopPlayback();
   $("sendBtn").disabled = true; $("result").classList.add("hidden");
   try{
@@ -509,10 +494,11 @@ $("sendBtn").addEventListener("click", async () => {
     say("We're taking care of it. Generating an ID for you…");
     const res = await fetch(api + "/api/upload", {
       method: "POST",
-      headers: { "x-upload-key": key, "x-waveform": makeWaveform(samples), "content-type": "audio/ogg" },
+      headers: { "x-waveform": makeWaveform(samples), "content-type": "audio/ogg" },
       body: blob,
     });
     const data = await res.json().catch(() => ({}));
+    if (res.status === 429) throw new Error("You're going a little fast. Give it a minute and try again.");
     if (!res.ok) throw new Error(data.error || ("Server said " + res.status));
     showResult(data.id, data.expiresAt);
     say("");
@@ -560,10 +546,10 @@ function renderRecent(){
 }
 
 async function checkRecent(){
-  const list = loadRecent(), api = apiBase(), key = $("key").value;
-  if (!list.length || !api || !key) return renderRecent();
+  const list = loadRecent(), api = apiBase();
+  if (!list.length || !api) return renderRecent();
   try{
-    const res = await fetch(`${api}/api/status?ids=${list.map((r) => r.id).join(",")}`, { headers: { "x-upload-key": key } });
+    const res = await fetch(`${api}/api/status?ids=${list.map((r) => r.id).join(",")}`);
     if (!res.ok) return renderRecent();
     const { alive } = await res.json();
     saveRecent(list.filter((r) => alive.includes(r.id)));
