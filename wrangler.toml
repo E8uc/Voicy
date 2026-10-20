@@ -10,10 +10,25 @@ DISCORD_PUBLIC_KEY = "66ecc96b36f7aa337ea59b569a19fbb617fd13b3b9539c56fb02229ce9
 
 # Optional: set "*" (default) or your GitHub Pages origin, e.g. https://USERNAME.github.io
 # ALLOWED_ORIGIN = "https://USERNAME.github.io"
-# Unused voices are deleted after this many hours (default 24). Used voices are deleted right after sending.
-# VOICE_TTL_HOURS = "24"
+# Unused voices are deleted after this many hours (default 6). Used voices are deleted right after sending.
+# VOICE_TTL_HOURS = "6"
 
 # Storage for recorded voices. Wrangler creates this namespace automatically on deploy.
 # If your deploy complains, create one (npx wrangler kv namespace create VOICES) and add: id = "..."
 [[kv_namespaces]]
 binding = "VOICES"
+
+# Abuse protection for the public upload page (per IP). Needs Wrangler 4.36+.
+[[ratelimits]]
+name = "UPLOAD_LIMITER"
+namespace_id = "1001"
+  [ratelimits.simple]
+  limit = 6
+  period = 60
+
+[[ratelimits]]
+name = "STATUS_LIMITER"
+namespace_id = "1002"
+  [ratelimits.simple]
+  limit = 30
+  period = 60
