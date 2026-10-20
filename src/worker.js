@@ -1,8 +1,7 @@
 const DISCORD_API = "https://discord.com/api/v10";
 const VOICE_MESSAGE_FLAG = 1 << 13;
 const EPHEMERAL_FLAG = 1 << 6;
-const DEFAULT_ATTACHMENT_LIMIT = 20 * 1024 * 1024;
-const RUNTIME_VERSION = "2026-10-20-voicy-v4-recorder-page";
+const RUNTIME_VERSION = "2026-10-20-voicy-v6-id-only";
 const MAX_UPLOAD_BYTES = 2 * 1024 * 1024;
 const DEFAULT_TTL_HOURS = 6;
 const ID_LENGTH = 7;
@@ -21,12 +20,6 @@ const VOICE_COMMAND = {
       type: 3,
       required: false,
       max_length: 20,
-    },
-    {
-      name: "file",
-      description: "Or choose an OGG Opus audio file directly",
-      type: 11,
-      required: false,
     },
   ],
 };
@@ -84,6 +77,7 @@ export default {
       return Response.json({ type: 1 });
     }
 
+    console.log("interaction", interaction.type, interaction.data?.name || interaction.data?.custom_id || "");
     try {
       return await routeInteraction(interaction, env, ctx);
     } catch (error) {
@@ -98,9 +92,6 @@ async function routeInteraction(interaction, env, ctx) {
 
     if (interaction.type === 2 && interaction.data?.name === "voice") {
       const options = interaction.data?.options || [];
-      if (options.some((item) => item.name === "file")) {
-        return handleVoiceInteraction(interaction);
-      }
       const idOption = options.find((item) => item.name === "id");
       if (idOption?.value) {
         return sendStoredVoice(interaction, idOption.value, env, ctx);
@@ -225,51 +216,6 @@ async function registerCommand(request, env) {
   });
 }
 
-async function handleVoiceInteraction(interaction) {
-  const option = (interaction.data?.options || []).find((item) => item.name === "file");
-  const attachmentId = option?.value;
-  const attachment = interaction.data?.resolved?.attachments?.[attachmentId];
-
-  if (!attachment?.url) {
-    return interactionResponse("I couldn't read that attachment. Try selecting the file again.", true);
-  }
-
-  const size = Number(attachment.size || 0);
-  const interactionLimit = Number(
-    interaction.attachment_size_limit || DEFAULT_ATTACHMENT_LIMIT,
-  );
-
-  if (size > interactionLimit) {
-    return interactionResponse(
-      `This file is larger than Discord's current upload limit for this interaction (${formatBytes(interactionLimit)}).`,
-      true,
-    );
-  }
-
-  let source;
-  try {
-    source = await fetch(attachment.url);
-  } catch {
-    return interactionResponse("I couldn't download that audio file from Discord.", true);
-  }
-
-  if (!source.ok) {
-    return interactionResponse(`Discord returned ${source.status} while reading the audio file.`, true);
-  }
-
-  const bytes = new Uint8Array(await source.arrayBuffer());
-  const metadata = inspectOggOpus(bytes);
-
-  if (!metadata.ok) {
-    return interactionResponse(
-      "That file isn't OGG Opus. Convert it to OGG Opus first, then run /voice again.",
-      true,
-    );
-  }
-
-  return sendVoiceMessage(interaction, bytes, metadata.duration, makeWaveform(bytes, metadata.duration));
-}
-
 async function sendVoiceMessage(interaction, bytes, duration, waveform, schedule, onSuccess, retryHint = "") {
   const callbackPayload = {
     type: 4,
@@ -327,30 +273,30 @@ function idModal() {
       title: "Voicy",
       components: [
         {
-          type: 1,
-          components: [
-            {
-              type: 4,
-              custom_id: "voice_id",
-              style: 1,
-              label: "ID",
-              placeholder: "0000001",
-              min_length: 1,
-              max_length: 20,
-              required: true,
-            },
-          ],
+          type: 18,
+          label: "ID",
+          description: "The number you got from the recorder page",
+          component: {
+            type: 4,
+            custom_id: "voice_id",
+            style: 1,
+            placeholder: "0000001",
+            min_length: 1,
+            max_length: 20,
+            required: true,
+          },
         },
       ],
     },
   });
 }
 
+// Works for both modal shapes: Label -> component, and ActionRow -> components.
 function findModalValue(components, customId) {
-  for (const row of components || []) {
-    for (const field of row.components || [row]) {
-      if (field.custom_id === customId) return String(field.value || "");
-    }
+  for (const item of components || []) {
+    if (item?.custom_id === customId) return String(item.value || "");
+    const nested = findModalValue([...(item?.components || []), ...(item?.component ? [item.component] : [])], customId);
+    if (nested) return nested;
   }
   return "";
 }
