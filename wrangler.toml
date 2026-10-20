@@ -11,6 +11,10 @@ enabled = true
 # Serve the recorder page (docs/) from the Worker URL itself.
 [assets]
 directory = "./docs"
+binding = "ASSETS"
+# Always run the Worker first, so Discord's POST requests to "/" reach the bot code
+# instead of being answered by index.html.
+run_worker_first = true
 
 [vars]
 DISCORD_APPLICATION_ID = "1545438694725652490"
