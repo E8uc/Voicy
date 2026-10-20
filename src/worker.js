@@ -1,7 +1,7 @@
 const DISCORD_API = "https://discord.com/api/v10";
 const VOICE_MESSAGE_FLAG = 1 << 13;
 const EPHEMERAL_FLAG = 1 << 6;
-const RUNTIME_VERSION = "2026-10-20-voicy-v6-id-only";
+const RUNTIME_VERSION = "2026-10-20-voicy-v7-worker-first";
 const MAX_UPLOAD_BYTES = 2 * 1024 * 1024;
 const DEFAULT_TTL_HOURS = 6;
 const ID_LENGTH = 7;
@@ -40,7 +40,7 @@ export default {
       return handleUpload(request, env);
     }
 
-    if (request.method === "GET" && url.pathname === "/") {
+    if (request.method === "GET" && url.pathname === "/" && !env.ASSETS) {
       return homePage(env);
     }
 
@@ -54,6 +54,10 @@ export default {
 
     if (request.method === "POST" && url.pathname === "/register") {
       return registerCommand(request, env);
+    }
+
+    if ((request.method === "GET" || request.method === "HEAD") && env.ASSETS) {
+      return env.ASSETS.fetch(request);
     }
 
     if (request.method !== "POST") {
